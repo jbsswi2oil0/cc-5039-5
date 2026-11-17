@@ -1,0 +1,17 @@
+{
+  "name": "live-replay-kernel",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/server/server.mjs",
+    "test": "node --test test/kernel.test.mjs",
+    "test:e2e": "node --test --test-concurrency=1 test/browser.test.mjs"
+  },
+  "dependencies": {
+    "ffmpeg-static": "^5.2.0"
+  },
+  "devDependencies": {
+    "playwright": "^1.65.1"
+  }
+}

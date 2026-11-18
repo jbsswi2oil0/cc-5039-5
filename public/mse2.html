@@ -1,0 +1,13 @@
+<!doctype html><html><body><video id=v muted playsinline></video><script>
+window.__run=async(seqs)=>{
+ const v=document.getElementById('v');const ms=new MediaSource();v.src=URL.createObjectURL(ms);
+ await new Promise(r=>ms.addEventListener('sourceopen',r,{once:true}));
+ const mime='video/mp4; codecs="avc1.42c01f,mp4a.40.2"';
+ const res={ok:MediaSource.isTypeSupported(mime),errors:[]};
+ const sb=ms.addSourceBuffer(mime);sb.addEventListener('error',e=>res.errors.push('sb-error'));
+ const append=async u=>{const b=await (await fetch(u)).arrayBuffer();await new Promise((ok,no)=>{sb.addEventListener('updateend',ok,{once:true});sb.addEventListener('error',no,{once:true});sb.appendBuffer(b);});};
+ try{ await append('/replay/init.mp4'); for(const s of seqs) await append('/replay/seg/'+s); }catch(e){res.appendError=String(e);return res;}
+ res.ranges=Array.from({length:sb.buffered.length},(_,i)=>[sb.buffered.start(i),sb.buffered.end(i)]);
+ return res;
+};
+</script></body></html>

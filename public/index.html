@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sports Replay Kernel</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #0b0f16;
+      --panel: #141b26;
+      --panel-2: #1b2533;
+      --line: #2b3747;
+      --text: #e7edf4;
+      --muted: #8fa0b4;
+      --accent: #4cc38a;
+      --warn: #e0a94a;
+      --bad: #e06a6a;
+      --live: #57b0ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 14px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+    header {
+      display: flex;
+      align-items: baseline;
+      gap: 16px;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #131a24, #0d1219);
+    }
+    header h1 { font-size: 15px; margin: 0; letter-spacing: .04em; font-weight: 600; }
+    header .sub { color: var(--muted); font-size: 12px; }
+    .pill {
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .pill.fresh { color: var(--accent); border-color: #2f5f49; }
+    .pill.stale { color: var(--warn); border-color: #5f4a2f; }
+    .pill.reset { color: var(--bad); border-color: #5f2f2f; }
+    main {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 340px;
+      gap: 16px;
+      padding: 16px 20px 28px;
+      max-width: 1440px;
+      margin: 0 auto;
+    }
+    @media (max-width: 980px) { main { grid-template-columns: 1fr; } }
+    .stage { background: #000; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    video { display: block; width: 100%; aspect-ratio: 16 / 9; background: #000; }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      padding: 10px 12px;
+      background: var(--panel);
+      border-top: 1px solid var(--line);
+    }
+    button {
+      background: var(--panel-2);
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 7px;
+      padding: 6px 11px;
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    button:hover { border-color: #3d4c60; }
+    button.active { border-color: var(--accent); color: var(--accent); }
+    button:disabled { opacity: .45; cursor: not-allowed; }
+    input[type=range] { accent-color: var(--accent); }
+    .readout { margin-left: auto; color: var(--muted); font-size: 12px; white-space: pre; }
+    section.panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 14px;
+    }
+    section.panel h2 {
+      margin: 0 0 8px;
+      font-size: 11px;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .timeline {
+      margin-top: 10px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+      background: #0e131b;
+    }
+    .timeline-head {
+      display: flex;
+      justify-content: space-between;
+      padding: 6px 10px;
+      font-size: 11px;
+      color: var(--muted);
+      border-bottom: 1px solid var(--line);
+    }
+    .track {
+      position: relative;
+      height: 46px;
+      background:
+        repeating-linear-gradient(90deg, #101721 0 49px, #121a25 49px 50px);
+    }
+    .evicted-band {
+      position: absolute;
+      top: 0; bottom: 0;
+      background: repeating-linear-gradient(135deg, rgba(224,106,106,.16) 0 6px, rgba(224,106,106,.04) 6px 12px);
+      border-right: 1px dashed rgba(224,106,106,.5);
+    }
+    .ava {
+      position: absolute;
+      top: 11px; height: 24px;
+      border-radius: 4px;
+      background: linear-gradient(180deg, #2f7fd6, #245f9f);
+      opacity: .85;
+    }
+    .ava.evictedout { background: #3a2530; opacity: .5; }
+    .ava .lbl {
+      position: absolute; inset: 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 10px; color: #dce8f7;
+      overflow: hidden; white-space: nowrap;
+    }
+    .playhead {
+      position: absolute;
+      top: 0; bottom: 0; width: 2px;
+      background: var(--accent);
+      box-shadow: 0 0 8px rgba(76,195,138,.8);
+      transform: translateX(-1px);
+    }
+    .liveline {
+      position: absolute;
+      top: 0; bottom: 0;
+      border-left: 2px dashed var(--live);
+      opacity: .75;
+    }
+    .gptr { position: absolute; top: 6px; bottom: 6px; width: 1px; background: rgba(255,255,255,.18); }
+    .scale { display: flex; justify-content: space-between; padding: 4px 10px; font-size: 10px; color: var(--muted); border-top: 1px solid var(--line); }
+    .kv { display: grid; grid-template-columns: 88px 1fr; gap: 3px 8px; font-size: 12px; }
+    .kv dt { color: var(--muted); }
+    .kv dd { margin: 0; word-break: break-all; }
+    .log { max-height: 190px; overflow: auto; font-size: 11px; line-height: 1.5; color: #b8c6d6; }
+    .log .t { color: var(--muted); }
+    .log .warn { color: var(--warn); }
+    .log .bad { color: var(--bad); }
+    .log .ok { color: var(--accent); }
+    .seekrow { display: flex; gap: 8px; align-items: center; margin-top: 8px; }
+    .seekrow input[type=range] { flex: 1; }
+    .badge { font-size: 10px; padding: 1px 5px; border-radius: 4px; border: 1px solid var(--line); color: var(--muted); }
+    .badge.live { color: var(--live); border-color: #2c4a6a; }
+    .badge.replay { color: var(--warn); border-color: #5f4a2f; }
+    .now { font-size: 24px; letter-spacing: .02em; }
+    .sub { color: var(--muted); font-size: 11px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>SPORTS REPLAY KERNEL</h1>
+    <span class="sub">rolling window · discontinuity-aware timeline · dynamic source</span>
+    <span id="freshness" class="pill">connecting</span>
+    <span id="mode" class="badge">idle</span>
+    <span class="sub" style="margin-left:auto" id="clock"></span>
+  </header>
+
+  <main>
+    <div>
+      <div class="stage">
+        <video id="video" playsinline muted></video>
+        <div class="controls">
+          <button id="toggle">Play</button>
+          <button id="jumpBack" title="step back inside the window">−10s</button>
+          <button id="jumpFwd" title="step forward inside the window">+10s</button>
+          <button id="goLive" class="active">Follow live edge</button>
+          <button id="tick" title="advance the dynamic source one segment">Advance source</button>
+          <span class="readout" id="readout">—</span>
+        </div>
+      </div>
+
+      <section class="panel">
+        <h2>Playback window</h2>
+        <div class="timeline">
+          <div class="timeline-head">
+            <span id="rangeLabel">available —</span>
+            <span id="evictedLabel"></span>
+          </div>
+          <div class="track" id="track">
+            <div class="evicted-band" id="evictedBand" style="display:none"></div>
+            <div id="segs"></div>
+            <div class="liveline" id="liveline" style="display:none"></div>
+            <div class="playhead" id="playhead"></div>
+          </div>
+          <div class="scale"><span id="scaleStart">—</span><span id="scaleEnd">—</span></div>
+        </div>
+        <div class="seekrow">
+          <span class="sub">seek</span>
+          <input id="seek" type="range" min="0" max="1000" value="0" step="1" />
+          <span class="sub" id="seekLabel">—</span>
+        </div>
+        <div class="seekrow">
+          <span class="sub">media seq</span>
+          <input id="seqInput" type="number" min="0" step="1" placeholder="e.g. 12" style="width:90px;background:#0e131b;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 6px" />
+          <button id="seqGo">Resolve</button>
+          <span class="sub" id="seqResult"></span>
+        </div>
+      </section>
+    </div>
+
+    <aside>
+      <section class="panel">
+        <h2>Kernel state</h2>
+        <div class="now" id="nowTime">--:--</div>
+        <div class="sub" id="nowDate">no date declared</div>
+        <dl class="kv" style="margin-top:10px">
+          <dt>freshness</dt><dd id="kvFresh">—</dd>
+          <dt>available</dt><dd id="kvRange">—</dd>
+          <dt>playhead</dt><dd id="kvPlayhead">—</dd>
+          <dt>segment</dt><dd id="kvSegment">—</dd>
+          <dt>frame</dt><dd id="kvFrame">—</dd>
+          <dt>source date</dt><dd id="kvPdt">—</dd>
+          <dt>epoch / runs</dt><dd id="kvEpoch">—</dd>
+          <dt>buffer</dt><dd id="kvBuffer">—</dd>
+        </dl>
+      </section>
+
+      <section class="panel">
+        <h2>Event log</h2>
+        <div class="log" id="log"></div>
+      </section>
+    </aside>
+  </main>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

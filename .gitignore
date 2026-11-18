@@ -27,3 +27,6 @@ __pycache__/
 # Generated demo media and local experiments
 /.data/source/
 /.scratch/
+
+# Local toolchain (static ffmpeg, headless Chrome, extra shared libs)
+/.local/

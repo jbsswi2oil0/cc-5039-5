@@ -36,6 +36,8 @@ const el = {
   kvPdt: $('kvPdt'),
   kvEpoch: $('kvEpoch'),
   kvBuffer: $('kvBuffer'),
+  kvIndex: $('kvIndex'),
+  kvHold: $('kvHold'),
   log: $('log'),
 };
 
@@ -44,6 +46,7 @@ const player = (window.__player = new WindowPlayer(el.video, {
 }));
 
 let snapshot = null;
+let indexStats = null;
 let lastWindow = { start: null, end: null };
 let segments = [];
 let seeking = false;
@@ -85,8 +88,30 @@ async function poll() {
     renderWindow();
     await player.syncWindow(snapshot);
     renderStatus();
+    // Real index/hold counters straight from the kernel; refreshed less often
+    // than the window since they are diagnostic, not playback data.
+    const statsResponse = await fetch('/api/index-stats', { cache: 'no-store' });
+    if (statsResponse.ok) {
+      indexStats = await statsResponse.json();
+      renderIndexStats();
+    }
   } catch (error) {
     log(`window poll failed: ${error.message}`, 'bad');
+  }
+}
+
+function renderIndexStats() {
+  if (!indexStats) return;
+  el.kvIndex.textContent =
+    `live ${indexStats.liveSegments} · tombstones ${indexStats.tombstoneRecords} · ` +
+    `evicted ${indexStats.evictedRecords}/${indexStats.evictedTotal} · ` +
+    `lookups ${indexStats.resolvePlayback.calls} (binary ${indexStats.resolvePlayback.binarySearchSteps})`;
+  if (indexStats.hold) {
+    el.kvHold.textContent = indexStats.hold.fresh
+      ? `pinned @ ${indexStats.hold.position.toFixed(2)}s (age ${indexStats.hold.ageMs}ms)`
+      : `stale @ ${indexStats.hold.position.toFixed(2)}s — edge will roll`;
+  } else {
+    el.kvHold.textContent = 'none (following live)';
   }
 }
 

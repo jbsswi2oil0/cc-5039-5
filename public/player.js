@@ -30,6 +30,7 @@ export class WindowPlayer extends EventTarget {
     this.errors = [];
     this.initLoaded = false;
     this.initPromise = null;
+    this.lastHoldRefreshAt = 0;
     this.attach();
   }
 
@@ -155,6 +156,16 @@ export class WindowPlayer extends EventTarget {
         ? Math.max(liveEdge, Math.min(this.currentTime || liveEdge, liveEdge))
         : this.target,
     );
+    // While parked in replay mode the viewer is still consuming this position:
+    // refresh the kernel hold on the poll cadence (throttled) so a long replay
+    // does not let the TTL expire and evict the segment being decoded.
+    if (!this.followLive && this.target !== null && this.target >= start) {
+      const now = Date.now();
+      if (!this.lastHoldRefreshAt || now - this.lastHoldRefreshAt > 1000) {
+        this.lastHoldRefreshAt = now;
+        this.registerHold(this.target).catch(() => {});
+      }
+    }
     if (this.video.paused && this.followLive) {
       await this.play().catch(() => {});
     }
@@ -343,12 +354,30 @@ export class WindowPlayer extends EventTarget {
     this.lastPlaybackTime = clamped;
     await this.ensureBufferedAround(clamped);
     this.video.currentTime = clamped;
+    // Tell the kernel a viewer is parked here so the left edge cannot evict the
+    // segments still needed to decode this position. This is a real kernel call
+    // against the live window, never a locally fabricated range.
+    this.registerHold(clamped).catch(() => {});
     this.emit('seek', { to: clamped });
+  }
+
+  async registerHold(t) {
+    if (!Number.isFinite(t)) return;
+    await fetch(`${this.kernelBase}/api/hold?t=${encodeURIComponent(t.toFixed(3))}`, {
+      cache: 'no-store',
+    });
+  }
+
+  async releaseHold() {
+    await fetch(`${this.kernelBase}/api/hold?clear=1`, { cache: 'no-store' }).catch(() => {});
   }
 
   setFollowLive(value) {
     this.followLive = value;
     if (value && this.windowEnd !== null) {
+      // Back at the live edge: the viewer no longer pins an old position, so
+      // release the hold and let the window roll normally.
+      this.releaseHold();
       this.target = Math.max(this.windowStart, this.windowEnd - 2);
       this.ensureBufferedAround(this.target)
         .then(() => this.seek(this.target))

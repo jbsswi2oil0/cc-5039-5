@@ -32,6 +32,7 @@ export class ReplayKernelServer {
     retainSeconds = 24,
     pollIntervalMs = 250,
     gapSeconds = 0,
+    holdTtlMs = 30_000,
     upstreamFailures = false,
   } = {}) {
     this.source = source;
@@ -40,7 +41,7 @@ export class ReplayKernelServer {
     this.retainSeconds = retainSeconds;
     this.pollIntervalMs = pollIntervalMs;
     this.upstreamFailures = upstreamFailures;
-    this.timeline = new ReplayTimeline({ retainSeconds, gapSeconds });
+    this.timeline = new ReplayTimeline({ retainSeconds, gapSeconds, holdTtlMs });
     this.initCache = new Map();
     this.server = null;
     this.poller = null;
@@ -96,6 +97,7 @@ export class ReplayKernelServer {
         this.timeline = new ReplayTimeline({
           retainSeconds: this.retainSeconds,
           gapSeconds: this.timeline.gapSeconds,
+          holdTtlMs: this.timeline.holdTtlMs,
         });
         this.timeline.applyPlaylist(playlist, { fetchedAt });
         return;
@@ -114,6 +116,8 @@ export class ReplayKernelServer {
     if (route === '/api/health') return this.health(res);
     if (route === '/api/window') return this.windowJson(res);
     if (route === '/api/playhead') return this.playhead(res, url);
+    if (route === '/api/hold') return this.hold(res, url);
+    if (route === '/api/index-stats') return this.indexStats(res);
     if (route.startsWith('/api/sequence/')) return this.sequenceLookup(res, url);
     if (route === '/replay/index.m3u8') return this.playlist(res);
     if (route === '/replay/init.mp4') return this.init(res);
@@ -132,6 +136,7 @@ export class ReplayKernelServer {
         sequenceResetCount: this.sequenceResetCount,
         lastPlaylistSequence: this.timeline.lastPlaylistSequence,
         poller: this.poller?.stats ?? null,
+        index: this.timeline.indexStats,
       },
     });
   }
@@ -147,6 +152,13 @@ export class ReplayKernelServer {
     const t = Number(url.searchParams.get('t'));
     try {
       const resolved = this.timeline.resolvePlayback(t);
+      // A viewer resolving a position inside the window is parked there: the
+      // kernel holds the left edge so the segments their decoder still needs
+      // cannot be evicted out from under them. The hold refreshes on every
+      // resolve and goes stale once the viewer stops asking.
+      if (resolved.status === 'ok') {
+        this.timeline.setHold({ position: t });
+      }
       const described = resolved.segment ? this.timeline.describe(resolved.segment) : null;
       sendJson(res, 200, {
         ...resolved,
@@ -158,6 +170,40 @@ export class ReplayKernelServer {
         sendJson(res, 409, { code: error.code, message: error.message, ...error });
       } else throw error;
     }
+  }
+
+  // Register, refresh or clear the viewer hold. POST/GET ?t=<seconds> parks the
+  // viewer at a real resolved position; ?clear=1 releases it (e.g. on return to
+  // live). This drives the same timeline the playback surface uses - no fixed
+  // data is ever substituted for the window.
+  hold(res, url) {
+    if (url.searchParams.get('clear') === '1') {
+      this.timeline.clearHold();
+      sendJson(res, 200, { ok: true, hold: null });
+      return;
+    }
+    const t = Number(url.searchParams.get('t'));
+    if (!Number.isFinite(t)) {
+      sendJson(res, 400, { error: 'hold requires a finite t parameter' });
+      return;
+    }
+    try {
+      const resolved = this.timeline.resolvePlayback(t);
+      if (resolved.status !== 'ok') {
+        sendJson(res, 409, { code: resolved.status, message: 'cannot hold a non-playable position' });
+        return;
+      }
+      this.timeline.setHold({ position: t });
+      sendJson(res, 200, { ok: true, hold: this.timeline.indexStats.hold });
+    } catch (error) {
+      if (error instanceof WindowError) {
+        sendJson(res, 409, { code: error.code, message: error.message, ...error });
+      } else throw error;
+    }
+  }
+
+  indexStats(res) {
+    sendJson(res, 200, this.timeline.indexStats);
   }
 
   sequenceLookup(res, url) {

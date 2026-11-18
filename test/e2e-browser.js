@@ -67,7 +67,12 @@ async function main() {
     dir,
     segmentFrames: SEGMENT_FRAMES,
     fps: FPS,
-    upstreamWindowSegments: 40,
+    // The origin keeps twice the kernel's retention (80 * 0.4s = 32s vs the
+    // kernel's 16s). A parked viewer's hold only has work to do when the
+    // kernel's own retention would evict a segment the origin still serves:
+    // upstream manifest rollout is an authoritative removal the hold cannot
+    // override, so origin window must be the outer bound.
+    upstreamWindowSegments: 80,
     scenarios: { publishLagSegments: 1 },
   }).init();
   await source.advance(40);
@@ -81,6 +86,9 @@ async function main() {
     port: kernelPort,
     retainSeconds: 16,
     pollIntervalMs: 120,
+    // Short TTL: the page's 400ms poll keeps a parked viewer's hold fresh,
+    // while an abandoned hold goes stale quickly so window rolling resumes.
+    holdTtlMs: 4000,
   });
   await kernel.listen();
 
@@ -273,6 +281,85 @@ async function main() {
       return p.snapshot.window.end > beforeTail + 0.2 ? p : null;
     }, { timeoutMs: 15000, label: 'window end advances' });
     check('window end advances while playing', true);
+
+    // 5b. Viewer hold driven through the real on-screen controls. Clicking the
+    //     seek slider parks the player; the kernel must register a hold against
+    //     the live window and keep that segment playable as the source keeps
+    //     advancing, then release it when the "Follow live edge" button is used.
+    const beforeHold = await probe();
+    const holdTarget = beforeHold.snapshot.window.start +
+      Math.min(4, (beforeHold.snapshot.window.end - beforeHold.snapshot.window.start) / 2);
+    // Use the actual seek control (the same handler a human triggers), not a
+    // direct player call.
+    await page.evaluate((target) => {
+      const seek = document.getElementById('seek');
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+      setter.call(seek, String(target));
+      seek.dispatchEvent(new Event('input', { bubbles: true }));
+      seek.dispatchEvent(new Event('change', { bubbles: true }));
+    }, holdTarget);
+    await waitFor(async () => {
+      const p = await probe();
+      return Math.abs(p.status.currentTime - holdTarget) < 0.5 && p.status.readyState >= 2
+        ? p
+        : null;
+    }, { label: 'UI seek reaches the held position' });
+
+    const holdStats = await waitFor(async () => {
+      const body = await (await fetch(`http://127.0.0.1:${kernelPort}/api/index-stats`)).json();
+      return body.hold && body.hold.fresh ? body : null;
+    }, { label: 'kernel registers a fresh hold' });
+    check(
+      'UI seek registers a real kernel hold on the live window',
+      holdStats.hold.fresh && Math.abs(holdStats.hold.position - holdTarget) < 0.5,
+      `hold=${JSON.stringify(holdStats.hold)} target=${holdTarget.toFixed(2)}`,
+    );
+
+    // While held, let the real-time source run so the page keeps polling and
+    // refreshing the hold. The window must grow past the held position without
+    // evicting it, because the parked viewer's hold is continuously renewed.
+    const heldRangeBefore = (await probe()).snapshot.window;
+    await waitFor(async () => {
+      const p = await probe();
+      return p.snapshot.window.end > heldRangeBefore.end + 4 ? p : null;
+    }, { timeoutMs: 25000, label: 'source advances past the held position' });
+    const heldProbe = await probe();
+    const heldSegment = heldProbe.snapshot.window.segments.find(
+      (s) => holdTarget >= s.playbackStart && holdTarget < s.playbackEnd,
+    );
+    check(
+      'held segment stays inside the valid window while the viewer is parked',
+      heldProbe.snapshot.window.start <= holdTarget && heldSegment !== undefined,
+      `start=${heldProbe.snapshot.window.start} target=${holdTarget.toFixed(2)} ` +
+        `seg=${heldSegment?.sequence ?? 'none'}`,
+    );
+    if (heldSegment) {
+      const segResp = await fetch(`http://127.0.0.1:${kernelPort}/replay/seg/${heldSegment.sequence}`);
+      check(
+        'held segment bytes are still served (not prematurely evicted)',
+        segResp.status === 200,
+        `seq ${heldSegment.sequence} HTTP ${segResp.status}`,
+      );
+    }
+
+    // Return to live using the real button; the hold must clear and the window
+    // left edge must eventually roll past the previously held position.
+    await page.evaluate(() => document.getElementById('goLive').click());
+    await waitFor(async () => {
+      const body = await (await fetch(`http://127.0.0.1:${kernelPort}/api/index-stats`)).json();
+      return body.hold === null ? body : null;
+    }, { label: 'hold released on return to live' });
+    check('return-to-live button releases the kernel hold', true);
+    await waitFor(async () => {
+      const p = await probe();
+      return p.snapshot.window.start > holdTarget + 0.5 ? p : null;
+    }, { timeoutMs: 25000, label: 'window rolls past the released hold' });
+    const afterRelease = await probe();
+    check(
+      'window resumes rolling after the hold is released',
+      afterRelease.snapshot.window.start > holdTarget,
+      `start=${afterRelease.snapshot.window.start} held=${holdTarget.toFixed(2)}`,
+    );
 
     // 6. Refresh the page against a fresh kernel state (no console errors).
     check('no uncaught page errors', pageErrors.length === 0, pageErrors.slice(0, 3).join(' | '));

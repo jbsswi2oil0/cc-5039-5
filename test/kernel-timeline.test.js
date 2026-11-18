@@ -243,6 +243,54 @@ test('a sequence reset starts a new epoch and retires the old axis', () => {
   assert.equal(entry.epoch, 1);
 });
 
+test('a reset is detected from discontinuity-sequence when MEDIA-SEQUENCE stays pinned', () => {
+  // A large origin window keeps the advertised MEDIA-SEQUENCE at 0 even though
+  // the encoder restarted numbering. The kernel must still open a new epoch.
+  const t = new ReplayTimeline({ retainSeconds: 100 });
+  t.applyPlaylist(playlist({
+    mediaSequence: 0,
+    discSequence: 0,
+    segments: segs(0, 4),
+  }));
+  assert.equal(t.epoch, 0);
+  const result = t.applyPlaylist(playlist({
+    mediaSequence: 0,
+    discSequence: 1,
+    segments: [
+      { sequence: 0, duration: 2, discontinuity: true },
+      { sequence: 1, duration: 2 },
+    ],
+  }));
+  assert.equal(result.reset, true);
+  assert.equal(t.epoch, 1);
+  // The reused sequence 0 belongs to the new epoch, not the old axis.
+  const reopened = t.resolveSequence(0);
+  assert.equal(reopened.epoch, 1);
+  assert.equal(t.window.segments[0].playbackStart, 8);
+});
+
+test('a discontinuity-sequence bump with monotonic numbering is not a reset', () => {
+  // Ordinary in-stream discontinuity: the numbering keeps moving forward, so
+  // the playlist opens a new run but must stay in epoch 0.
+  const t = new ReplayTimeline({ retainSeconds: 100 });
+  t.applyPlaylist(playlist({
+    mediaSequence: 0,
+    discSequence: 0,
+    segments: segs(0, 3),
+  }));
+  const result = t.applyPlaylist(playlist({
+    mediaSequence: 2,
+    discSequence: 1,
+    segments: [
+      { sequence: 2, duration: 2, discontinuity: true },
+      { sequence: 3, duration: 2 },
+    ],
+  }));
+  assert.equal(result.reset, false);
+  assert.equal(t.epoch, 0);
+  assert.equal(t.window.runs.length, 2);
+});
+
 test('declared gaps are represented and never playable', () => {
   const t = new ReplayTimeline();
   t.applyPlaylist(playlist({
